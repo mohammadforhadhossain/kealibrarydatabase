@@ -1,0 +1,334 @@
+USE library_finall
+DROP PROCEDURE IF EXISTS create_loan
+GO
+CREATE PROCEDURE create_loan(
+
+@BookItemID uniqueidentifier,
+@UserID uniqueidentifier,
+@BranchID uniqueidentifier,
+@LoanDuration INT,
+@PickUpDate DATETIME = NULL
+)
+AS  		
+	
+DECLARE @isUserActive INT;
+
+	SET @isUserActive = (SELECT count(UserStatusID) FROM UserInfo
+	WHERE UserStatusID = 1 and UserID = @UserID);
+	
+
+	/*	DECLARE @avaliableBookItem INT;
+	SET @avaliableBookItem = (SELECT TOP 1 IsbnNO  FROM BookItem
+	WHERE IsbnNO = @IsbnNO and BranchAtNowId = @BranchWhereUserAt)
+	*/
+
+	/*  ADD LOGIC OF CHECKING IF BOOK IS AVAILABLE */
+	
+
+	
+
+	PRINT CONCAT ( @UserID , ' ' , @BookItemID , ' ' , @PickUpDate , ' ' , @LoanDuration, ' ' , @isUserActive)
+
+	BEGIN TRY
+	SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+	BEGIN TRAN T1
+	IF (@isUserActive = 1) 										
+		BEGIN
+			INSERT INTO [dbo].[Loan]
+					([BookItemID]
+					,[BranchID]
+					,[UserID]
+					,[LoanReturnTime]
+					,[LoanTime]
+					,[LoanActualReturnTime]
+					,[LoanPickupDate]
+					)
+					VALUES
+					(
+					@BookItemID,
+					@BranchID,
+					@UserID,
+					DATEADD(DAY, @LoanDuration, GETDATE()),
+					GETDATE(),
+					null,
+					@PickUpDate
+					);		
+			
+			PRINT 'we here fam'
+			--EXEC update_BookItem @BookItemID, null;		
+			COMMIT  TRAN T1;			
+		END		
+	ELSE 		
+		SELECT 'USER BLOCKED OR NOT FOUND' as errorMessage;								
+	END TRY
+	BEGIN CATCH
+			SELECT 'UNEXPECTED ERROR' as errorMessage
+			ROLLBACK TRAN T1;	
+			SELECT
+        ERROR_NUMBER() AS ErrorNumber,
+        ERROR_SEVERITY() AS ErrorSeverity,
+        ERROR_STATE() AS ErrorState,
+        ERROR_PROCEDURE() AS ErrorProcedure,
+        ERROR_LINE() AS ErrorLine,
+        ERROR_MESSAGE() AS ErrorMessage	
+	END CATCH		 											
+GO
+DROP PROCEDURE IF EXISTS return_book
+	USE library_finall
+	GO
+
+	/****** Object:  StoredProcedure [dbo].[update_BookItem]    Script Date: 11/29/2017 8:14:57 PM ******/
+	SET ANSI_NULLS ON
+	GO
+
+	SET QUOTED_IDENTIFIER ON
+	GO
+
+	create procedure return_book(
+	@BookItemID uniqueidentifier,
+	@CurrentBranchID uniqueidentifier,
+	@LoanDuration int = 7)
+	as 
+	begin		
+			
+
+		DECLARE @OriginalBranchId uniqueidentifier;
+		DECLARE @BookId uniqueidentifier;
+		DECLARE @LoanID uniqueidentifier;
+		DECLARE @TopUserOnQueueId uniqueidentifier;
+				
+		SET @LoanID = (SELECT LoanID from Loan WHERE BookItemID = @BookItemID);
+		SET @OriginalBranchId = (SELECT BranchID from BookItem WHERE @BookItemID = BookItemID);
+		SET @BookId = (SELECT BookID from BookItem WHERE @BookItemID = BookItemID );
+		
+		PRINT 'are we here '
+		
+		BEGIN TRY
+		SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+		BEGIN TRANSACTION TRAN1
+
+
+			UPDATE Loan SET LoanActualReturnTime = GETDATE() WHERE LoanID = @LoanID;
+
+			UPDATE BookItem SET CurrentBranchID = @CurrentBranchID WHERE BookItemID = @BookItemID;			
+			/* ARCHIVE LOAN */			
+
+			EXEC archiveLoan @LoanID
+			PRINT 'we here '
+			IF(@OriginalBranchId = @CurrentBranchID)
+				BEGIN
+				PRINT 'we here ?'
+					/* TAKE TOP GUY FROM QUEUE ON THIS BOOK ITEM */		
+					SET @TopUserOnQueueId = (SELECT TOP 1 UserID FROM ReservationQueue
+											 WHERE BookID = @BookId									 
+											 ORDER By ReservationDate);	
+											 					
+					IF (@TopUserOnQueueId IS NOT NULL)																
+						EXEC create_loan @BookItemId, @TopUserOnQueueId, @OriginalBranchId, @LoanDuration
+						
+					/* REMOVE TOP USER FORM QUEUE */						
+						
+				END
+
+			COMMIT TRAN TRAN1
+			END TRY
+			BEGIN CATCH				
+				ROLLBACK TRAN TRAN1
+
+						SELECT
+				ERROR_NUMBER() AS ErrorNumber,
+				ERROR_SEVERITY() AS ErrorSeverity,
+				ERROR_STATE() AS ErrorState,
+				ERROR_PROCEDURE() AS ErrorProcedure,
+				ERROR_LINE() AS ErrorLine,
+				ERROR_MESSAGE() AS ErrorMessage
+			END CATCH
+		END
+GO
+DROP procedure if exists archiveLoan
+USE [library_finall]
+GO
+CREATE PROCEDURE archiveLoan(
+@LoanID uniqueidentifier)
+AS
+	
+	
+
+	BEGIN TRY
+	SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+	BEGIN TRANSACTION DELETELOAN
+	
+	DECLARE @UserID uniqueidentifier, @BookItemID uniqueidentifier, @LoanActualReturnTime DATETIME;
+
+	SELECT	@UserID = UserID,
+			@BookItemID = BookItemID,
+			@LoanActualReturnTime = LoanActualReturnTime
+			FROM Loan WHERE LoanID = @LoanID;
+		SELECT * from Loan
+
+	print @LoanActualReturnTime
+
+	INSERT INTO ArchivedLoan VALUES(@LoanID, @UserID, @BookItemID, @LoanActualReturnTime);
+
+	DELETE FROM Loan WHERE LoanID = @LoanID;
+	PRINT ' it is working'
+	COMMIT TRANSACTION DELETELOAN
+
+	END TRY
+
+	BEGIN CATCH
+
+		
+		ROLLBACK TRANSACTION DELETELOAN
+		PRINT 'Error detected during archiving loan, all changes reversed'
+		 
+
+	SELECT
+        ERROR_NUMBER() AS ErrorNumber,
+        ERROR_SEVERITY() AS ErrorSeverity,
+        ERROR_STATE() AS ErrorState,
+        ERROR_PROCEDURE() AS ErrorProcedure,
+        ERROR_LINE() AS ErrorLine,
+        ERROR_MESSAGE() AS ErrorMessage
+	END CATCH
+
+GO
+
+
+USE library_finall
+DROP PROCEDURE IF EXISTS create_loan_library
+GO
+CREATE PROCEDURE create_loan_library(
+
+@UserID uniqueidentifier,
+@BookItemID uniqueidentifier,
+@BranchID uniqueidentifier,
+@LoanDuration INT = 30
+
+)
+AS  		
+	
+
+	DECLARE @LoanID uniqueidentifier;
+	DECLARE @PickUpDateNow DATETIME;
+	SET @PickUpDateNow = GETDATE();
+
+	BEGIN TRY
+		SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+		BEGIN TRANSACTION T1
+
+	SET @LoanID = (SELECT l.LoanID FROM Loan as l WHERE l.BookItemID = @BookItemID);
+
+	/*  IF LOANED FROM WEB SITE  */
+	IF @LoanID IS NOT NULL		
+		BEGIN
+			UPDATE Loan SET LoanPickupDate = GETDATE() WHERE LoanID = @LoanID; 							
+		END
+	/* IF NOT LOANED FROM WEB SITE*/	
+	ELSE 
+		BEGIN		
+			EXEC create_loan @BookItemID, @UserID, @BranchID, @LoanDuration, @PickUpDateNow
+		END
+
+
+	COMMIT TRANSACTION T1;
+	
+	END TRY
+	BEGIN CATCH
+			SELECT 'UNEXPECTED ERROR' as errorMessage
+			ROLLBACK TRANSACTION T1;	
+			SELECT
+        ERROR_NUMBER() AS ErrorNumber,
+        ERROR_SEVERITY() AS ErrorSeverity,
+        ERROR_STATE() AS ErrorState,
+        ERROR_PROCEDURE() AS ErrorProcedure,
+        ERROR_LINE() AS ErrorLine,
+        ERROR_MESSAGE() AS ErrorMessage	
+	END CATCH		 											
+GO
+
+
+
+
+
+
+USE library_finall
+DROP PROCEDURE IF EXISTS GetTopAvailableBookItemID
+GO
+CREATE PROCEDURE GetTopAvailableBookItemID(@BookID uniqueidentifier,@BranchID uniqueidentifier, @BookItemID uniqueidentifier output)
+	AS
+BEGIN	
+
+	DECLARE @FoundBookItemID uniqueidentifier	
+	DECLARE AllBookItemIdINBranch CURSOR
+	
+	FOR
+	SELECT bi.BookItemID from BookItem as bi WHERE bi.BookID = 'B93FA8D3-81E4-4D22-B5D8-6C6B46F7AF24' AND bi.CurrentBranchID = bi.BranchID AND bi.BranchID = 'B93FA8D3-81E4-4D22-B5D8-6C6B46F7AF05'
+	
+	OPEN AllBookItemIdINBranch 
+	FETCH NEXT FROM AllBookItemIdINBranch INTO @FoundBookItemID
+	WHILE @@FETCH_STATUS = 0
+	BEGIN
+		
+		DECLARE @doesNotExist int;
+		
+		set @doesNotExist = (SELECT count(*) FROM Loan WHERE BookItemID = @FoundBookItemID)
+
+		IF @doesNotExist = 0
+			BEGIN				
+				SET @BookItemID = @FoundBookItemID
+				BREAK;
+			END			
+		ELSE
+			
+			
+    FETCH NEXT FROM AllBookItemIdINBranch
+	END
+	CLOSE AllBookItemIdINBranch
+	DEALLOCATE AllBookItemIdINBranch	
+
+	RETURN
+END
+GO
+
+
+
+
+
+
+
+USE library_finall
+DROP PROCEDURE IF EXISTS create_loan_website
+GO
+CREATE PROCEDURE create_loan_website(
+@UserID uniqueidentifier,
+@BranchID uniqueidentifier,
+@BookID uniqueidentifier,
+@LoanDuration INT = 7
+)
+AS  					
+	/* SELECT BOOKITEM ID */
+
+	DECLARE @BookItemID uniqueidentifier;
+
+	EXEC GetTopAvailableBookItemID @BookID, @BranchID, @BookItemID OUTPUT		
+
+	BEGIN TRY
+	IF @BookItemID IS NOT NULL
+		BEGIN 
+			EXEC create_loan @BookItemID,@UserID,@BranchID,@LoanDuration
+		END
+	
+	END TRY
+	BEGIN CATCH						
+			SELECT
+        ERROR_NUMBER() AS ErrorNumber,
+        ERROR_SEVERITY() AS ErrorSeverity,
+        ERROR_STATE() AS ErrorState,
+        ERROR_PROCEDURE() AS ErrorProcedure,
+        ERROR_LINE() AS ErrorLine,
+        ERROR_MESSAGE() AS ErrorMessage	
+	END CATCH		 											
+GO
+
+		
